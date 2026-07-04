@@ -1,0 +1,18 @@
+Landsat-8 Thermal Cloud Screening
+
+Abstract
+
+This paper studies Landsat-8 OLI and TIRS imagery for cloud and land classification.
+
+Methods
+
+The TIRS B10 thermal band is useful for detecting cold cloud tops. NDVI greater than 0.3 is associated with vegetation in the tested region. Reflectance thresholds are scene dependent.
+
+Results
+
+Table 1. Feature importance for cloud screening.
+B10 brightness temperature contributed more to cloud screening than visible bands in the tested scenes.
+
+Discussion
+
+Low solar angle and mixed pixels caused uncertainty in reflectance-based rules.
