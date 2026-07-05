@@ -6,6 +6,7 @@ from pathlib import Path
 
 from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
+from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
 from satellite_paper_rag.parsing.pdf_parser import PdfPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
@@ -54,6 +55,25 @@ def result_to_dict(result: RetrievalResult) -> dict[str, object]:
     }
 
 
+def rule_to_dict(rule: ExtractedRule) -> dict[str, object]:
+    return {
+        "rule_id": rule.rule_id,
+        "paper_id": rule.paper_id,
+        "chunk_id": rule.chunk_id,
+        "rule_type": rule.rule_type,
+        "condition_text": rule.condition_text,
+        "target_classes": rule.target_classes,
+        "features": rule.features,
+        "thresholds": rule.thresholds,
+        "normalized_conditions": rule.normalized_conditions,
+        "page_start": rule.page_start,
+        "page_end": rule.page_end,
+        "section_title": rule.section_title,
+        "score": rule.score,
+        "evidence_terms": rule.evidence_terms,
+    }
+
+
 def resolve_query_path(args: argparse.Namespace) -> Path:
     if args.file:
         return Path(args.file)
@@ -63,11 +83,16 @@ def resolve_query_path(args: argparse.Namespace) -> Path:
     return DEFAULT_PAPER_DIR / paper_path
 
 
-def query_file(args: argparse.Namespace) -> int:
-    path = resolve_query_path(args)
+def build_chunks(path: Path):
     paper = parse_paper(path)
     vocabulary = DomainVocabulary.default()
     chunks = PaperChunkingPipeline(vocabulary).chunk(paper)
+    return paper, chunks
+
+
+def query_file(args: argparse.Namespace) -> int:
+    path = resolve_query_path(args)
+    paper, chunks = build_chunks(path)
     retriever = MockHybridRetriever(chunks)
     results = retriever.retrieve(
         RetrievalRequest(
@@ -91,6 +116,20 @@ def query_file(args: argparse.Namespace) -> int:
     return 0
 
 
+def extract_rules(args: argparse.Namespace) -> int:
+    path = resolve_query_path(args)
+    paper, chunks = build_chunks(path)
+    rules = RuleCandidateExtractor().extract(chunks, top_k=args.top_k)
+    payload = {
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "source_type": paper.source_type,
+        "rules": [rule_to_dict(rule) for rule in rules],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="satellite_paper_rag")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -108,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=["rule_candidate", "sentence_window_child", "figure_table", "paragraph_child"],
     )
     query.set_defaults(func=query_file)
+    extract = subparsers.add_parser("extract-rules")
+    extract_source = extract.add_mutually_exclusive_group(required=True)
+    extract_source.add_argument("--file")
+    extract_source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
+    extract.add_argument("--top-k", type=int, default=20)
+    extract.set_defaults(func=extract_rules)
     return parser
 
 
