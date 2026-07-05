@@ -2,8 +2,10 @@ import unittest
 from pathlib import Path
 
 from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
+from satellite_paper_rag.config import ChunkingConfig
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
+from satellite_paper_rag.schemas import Paper, PaperBlock, PaperSection, compute_source_hash
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -44,6 +46,44 @@ class ChunkingPipelineTest(unittest.TestCase):
         self.assertTrue(chunk.parser_version)
         self.assertTrue(chunk.chunker_version)
         self.assertTrue(chunk.vocabulary_version)
+
+    def test_long_paragraph_child_uses_recursive_fallback(self):
+        long_text = " ".join([f"Cloud sentence {index} with S7 thermal evidence." for index in range(20)])
+        paper = Paper(
+            paper_id="long_paper",
+            title="Sentinel-3 SLSTR Long Paper",
+            authors=[],
+            year=None,
+            source_path=None,
+            source_hash=compute_source_hash(long_text),
+            source_type="text",
+            sections=[
+                PaperSection(
+                    section_id="section_001",
+                    title="Methods",
+                    normalized_type="method",
+                    level=1,
+                    blocks=[
+                        PaperBlock(
+                            block_id="block_0001",
+                            text=long_text,
+                            block_type="paragraph",
+                            page_start=None,
+                            page_end=None,
+                            order_index=0,
+                        )
+                    ],
+                )
+            ],
+        )
+        chunks = PaperChunkingPipeline(
+            DomainVocabulary.default(),
+            ChunkingConfig(max_child_chars=80, recursive_chunk_size=80, recursive_chunk_overlap=0),
+        ).chunk(paper)
+
+        paragraph_chunks = [chunk for chunk in chunks if chunk.chunk_type == "paragraph_child"]
+        self.assertGreater(len(paragraph_chunks), 1)
+        self.assertTrue(all(len(chunk.text) <= 120 for chunk in paragraph_chunks))
 
 
 if __name__ == "__main__":

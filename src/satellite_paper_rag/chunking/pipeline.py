@@ -3,13 +3,17 @@ from __future__ import annotations
 import re
 
 from satellite_paper_rag.chunking.metadata_enricher import MetadataEnricher
+from satellite_paper_rag.chunking.recursive_splitter import RecursiveSplitterAdapter
+from satellite_paper_rag.config import ChunkingConfig
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.schemas import CHUNKER_VERSION, Chunk, Paper, PaperBlock, PaperSection
 
 
 class PaperChunkingPipeline:
-    def __init__(self, vocabulary: DomainVocabulary) -> None:
+    def __init__(self, vocabulary: DomainVocabulary, config: ChunkingConfig | None = None) -> None:
+        self.config = config or ChunkingConfig()
         self.enricher = MetadataEnricher(vocabulary)
+        self.recursive_splitter = RecursiveSplitterAdapter(self.config)
 
     def chunk(self, paper: Paper) -> list[Chunk]:
         chunks: list[Chunk] = [self._paper_summary_chunk(paper)]
@@ -19,9 +23,9 @@ class PaperChunkingPipeline:
             chunks.append(parent)
             child_ids: list[str] = []
             for block in section.blocks:
-                paragraph = self._paragraph_child_chunk(paper, parent.chunk_id, block, section.title, section.normalized_type)
-                chunks.append(paragraph)
-                child_ids.append(paragraph.chunk_id)
+                for paragraph in self._paragraph_child_chunks(paper, parent.chunk_id, block, section.title, section.normalized_type):
+                    chunks.append(paragraph)
+                    child_ids.append(paragraph.chunk_id)
                 for window in self._sentence_window_chunks(paper, parent.chunk_id, block, section.title, section.normalized_type):
                     chunks.append(window)
                     child_ids.append(window.chunk_id)
@@ -63,20 +67,29 @@ class PaperChunkingPipeline:
             suffix=f"{section_index:04d}",
         )
 
-    def _paragraph_child_chunk(self, paper: Paper, parent_id: str, block: PaperBlock, section_title: str, section_type: str) -> Chunk:
-        return self._make_chunk(
-            paper,
-            "paragraph_child",
-            block.text,
-            parent_id,
-            [block.block_id],
-            block.page_start,
-            block.page_end,
-            section_title,
-            section_type,
-            "semantic_recall",
-            suffix=block.block_id,
-        )
+    def _paragraph_child_chunks(self, paper: Paper, parent_id: str, block: PaperBlock, section_title: str, section_type: str) -> list[Chunk]:
+        parts = [block.text]
+        if len(block.text) > self.config.max_child_chars:
+            parts = self.recursive_splitter.split(block.text)
+        chunks: list[Chunk] = []
+        for part_index, part in enumerate(parts):
+            suffix = block.block_id if len(parts) == 1 else f"{block.block_id}_part_{part_index:03d}"
+            chunks.append(
+                self._make_chunk(
+                    paper,
+                    "paragraph_child",
+                    part,
+                    parent_id,
+                    [block.block_id],
+                    block.page_start,
+                    block.page_end,
+                    section_title,
+                    section_type,
+                    "semantic_recall",
+                    suffix=suffix,
+                )
+            )
+        return chunks
 
     def _sentence_window_chunks(self, paper: Paper, parent_id: str, block: PaperBlock, section_title: str, section_type: str) -> list[Chunk]:
         sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", block.text) if sentence.strip()]
@@ -85,8 +98,8 @@ class PaperChunkingPipeline:
             metadata = self.enricher.enrich(sentence)
             if not (metadata.target_classes or metadata.bands_or_layers or metadata.thresholds):
                 continue
-            start = max(index - 1, 0)
-            end = min(index + 2, len(sentences))
+            start = max(index - self.config.sentence_window_radius, 0)
+            end = min(index + self.config.sentence_window_radius + 1, len(sentences))
             text = " ".join(sentences[start:end])
             chunks.append(
                 self._make_chunk(
@@ -134,7 +147,7 @@ class PaperChunkingPipeline:
             ]
             if value
         )
-        if signal_count < 2:
+        if signal_count < self.config.min_rule_signal_count:
             return None
         return self._make_chunk(
             paper,

@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
+from satellite_paper_rag.config import RetrievalConfig
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
@@ -72,6 +73,24 @@ class MockRetrieverTest(unittest.TestCase):
 
         self.assertTrue(results)
         self.assertTrue(any(result.is_indirect_evidence for result in results))
+
+    def test_retrieval_config_controls_threshold_boost(self):
+        vocab = DomainVocabulary.default()
+        paper = MarkdownPaperParser().parse(FIXTURES / "sample_sentinel3_paper.md")
+        chunks = PaperChunkingPipeline(vocab).chunk(paper)
+        retriever = MockHybridRetriever(chunks, RetrievalConfig(threshold_boost=0.0))
+        results = retriever.retrieve(
+            RetrievalRequest(
+                query="What threshold helps identify cloud in Sentinel-3 SLSTR thermal bands?",
+                chunk_types=["rule_candidate", "sentence_window_child", "figure_table"],
+                metadata_filters={"target_classes": ["cloud"], "sensors": ["SLSTR"]},
+                expand_parents=True,
+                top_k=3,
+            )
+        )
+
+        self.assertTrue(results)
+        self.assertNotEqual(results[0].answer_type, "insufficient_evidence")
 
 
 if __name__ == "__main__":

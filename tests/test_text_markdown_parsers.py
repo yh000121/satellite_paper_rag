@@ -2,7 +2,6 @@ import unittest
 from pathlib import Path
 
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
-from satellite_paper_rag.parsing.pdf_parser import PdfPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
 
 
@@ -30,10 +29,6 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(paper.title, "Landsat-8 Thermal Cloud Screening")
         self.assertIn("method", [section.normalized_type for section in paper.sections])
         self.assertIn("result", [section.normalized_type for section in paper.sections])
-
-    def test_pdf_parser_boundary_is_explicit(self):
-        with self.assertRaises(NotImplementedError):
-            PdfPaperParser().parse(FIXTURES / "sample_landsat_paper.txt")
 
 
 if __name__ == "__main__":

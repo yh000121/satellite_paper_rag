@@ -46,3 +46,14 @@ results = retriever.retrieve(
 ```
 
 Every retrieved evidence chunk preserves `paper_id`, `chunk_id`, `parent_id`, `section_title`, page fields when available, `source_hash`, and parser/chunker/vocabulary versions.
+
+## Phase 2 PDF Query
+
+PDF parsing uses PyMuPDF and keeps page provenance on parsed blocks when page text is available.
+
+```powershell
+$env:PYTHONPATH='src'
+python -m satellite_paper_rag.cli query --file path\to\paper.pdf --query "What threshold helps identify cloud?" --requires-threshold
+```
+
+Long paragraph chunks use a LangChain recursive splitter fallback when they exceed the configured child length.

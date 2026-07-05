@@ -3,7 +3,10 @@ name = "satellite-paper-rag"
 version = "0.1.0"
 description = "Evidence-oriented chunking foundation for satellite imagery paper RAG."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "langchain-text-splitters",
+    "pymupdf",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

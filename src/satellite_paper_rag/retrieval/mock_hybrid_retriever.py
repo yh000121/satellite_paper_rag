@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import re
 
+from satellite_paper_rag.config import RetrievalConfig
 from satellite_paper_rag.retrieval.contract import RetrievalRequest, RetrievalResult
 from satellite_paper_rag.schemas import Chunk, ChunkMetadata
 
 
 class MockHybridRetriever:
-    def __init__(self, chunks: list[Chunk]) -> None:
+    def __init__(self, chunks: list[Chunk], config: RetrievalConfig | None = None) -> None:
         self.chunks = chunks
         self.by_id = {chunk.chunk_id: chunk for chunk in chunks}
+        self.config = config or RetrievalConfig()
 
     def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
         candidates = [
@@ -75,22 +77,15 @@ class MockHybridRetriever:
         return float(len(matched)), matched
 
     def _chunk_type_boost(self, chunk_type: str) -> float:
-        boosts = {
-            "rule_candidate": 3.0,
-            "sentence_window_child": 2.0,
-            "figure_table": 1.5,
-            "paragraph_child": 1.0,
-            "section_parent": 0.5,
-        }
-        return boosts.get(chunk_type, 0.0)
+        return self.config.chunk_type_boosts.get(chunk_type, 0.0)
 
     def _evidence_boost(self, chunk: Chunk, request: RetrievalRequest) -> float:
         query = request.query.lower()
         score = 0.0
         if ("threshold" in query or request.requires_threshold) and chunk.metadata.thresholds:
-            score += 5.0
+            score += self.config.threshold_boost
         if any(term in query for term in ["thermal", "band", "feature", "layer"]) and chunk.metadata.bands_or_layers:
-            score += 1.0
+            score += self.config.band_or_feature_boost
         return score
 
     def _missing_evidence(self, request: RetrievalRequest, results: list[RetrievalResult]) -> list[str]:
