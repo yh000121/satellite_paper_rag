@@ -13,6 +13,9 @@ from satellite_paper_rag.retrieval.contract import RetrievalRequest, RetrievalRe
 from satellite_paper_rag.retrieval.mock_hybrid_retriever import MockHybridRetriever
 
 
+DEFAULT_PAPER_DIR = Path("data") / "papers"
+
+
 def parse_paper(path: Path):
     suffix = path.suffix.lower()
     if suffix == ".pdf":
@@ -51,8 +54,17 @@ def result_to_dict(result: RetrievalResult) -> dict[str, object]:
     }
 
 
+def resolve_query_path(args: argparse.Namespace) -> Path:
+    if args.file:
+        return Path(args.file)
+    paper_path = Path(args.paper)
+    if paper_path.exists():
+        return paper_path
+    return DEFAULT_PAPER_DIR / paper_path
+
+
 def query_file(args: argparse.Namespace) -> int:
-    path = Path(args.file)
+    path = resolve_query_path(args)
     paper = parse_paper(path)
     vocabulary = DomainVocabulary.default()
     chunks = PaperChunkingPipeline(vocabulary).chunk(paper)
@@ -83,7 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="satellite_paper_rag")
     subparsers = parser.add_subparsers(dest="command", required=True)
     query = subparsers.add_parser("query")
-    query.add_argument("--file", required=True)
+    source = query.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file")
+    source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
     query.add_argument("--query", required=True)
     query.add_argument("--top-k", type=int, default=5)
     query.add_argument("--requires-threshold", action="store_true")

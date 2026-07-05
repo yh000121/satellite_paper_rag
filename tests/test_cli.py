@@ -37,6 +37,39 @@ class CliTest(unittest.TestCase):
         self.assertEqual(payload["results"][0]["answer_type"], "evidence")
         self.assertIn("BT below 270 K", payload["results"][0]["text"])
 
+    def test_query_cli_resolves_paper_from_default_papers_directory(self):
+        paper_dir = Path("data") / "papers"
+        paper_dir.mkdir(parents=True, exist_ok=True)
+        paper_path = paper_dir / "cli_default_lookup_sample.md"
+        paper_path.write_text((FIXTURES / "sample_sentinel3_paper.md").read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            env = dict(os.environ)
+            env["PYTHONPATH"] = "src"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "satellite_paper_rag.cli",
+                    "query",
+                    "--paper",
+                    paper_path.name,
+                    "--query",
+                    "What threshold helps identify cloud?",
+                    "--requires-threshold",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["paper_id"], "cli_default_lookup_sample")
+            self.assertEqual(payload["source_type"], "markdown")
+            self.assertIn("BT below 270 K", payload["results"][0]["text"])
+        finally:
+            paper_path.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
