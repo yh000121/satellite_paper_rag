@@ -21,7 +21,7 @@ class PaperBlock:
     page_start: int | None
     page_end: int | None
     order_index: int
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,27 @@ class PaperSection:
     normalized_type: str
     level: int
     blocks: list[PaperBlock] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PaperTable:
+    table_id: str
+    caption: str
+    rows: list[list[str]]
+    page_start: int | None
+    page_end: int | None
+    bbox: tuple[float, float, float, float] | None = None
+    extraction_method: str = "unknown"
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ParseQualityReport:
+    tables_detected: int = 0
+    tables_extracted: int = 0
+    captions_detected: int = 0
+    image_only_pages: list[int] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -44,6 +65,8 @@ class Paper:
     source_type: str
     sections: list[PaperSection]
     metadata: dict[str, str] = field(default_factory=dict)
+    tables: list[PaperTable] = field(default_factory=list)
+    quality_report: ParseQualityReport = field(default_factory=ParseQualityReport)
     parser_version: str = PARSER_VERSION
     vocabulary_version: str = VOCABULARY_VERSION
 

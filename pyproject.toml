@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "langchain-text-splitters",
     "pymupdf",
+    "pdfplumber",
 ]
 
 [tool.setuptools.packages.find]

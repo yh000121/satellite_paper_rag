@@ -74,6 +74,9 @@ def rule_to_dict(rule: ExtractedRule) -> dict[str, object]:
         "section_title": rule.section_title,
         "score": rule.score,
         "evidence_terms": rule.evidence_terms,
+        "rule_scope": rule.rule_scope,
+        "dynamic_threshold_formula": rule.dynamic_threshold_formula,
+        "validation_only": rule.validation_only,
     }
 
 

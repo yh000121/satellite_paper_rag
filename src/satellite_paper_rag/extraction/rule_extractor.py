@@ -22,12 +22,25 @@ class ExtractedRule:
     section_title: str
     score: float
     evidence_terms: list[str] = field(default_factory=list)
+    rule_scope: str = "classification"
+    dynamic_threshold_formula: str | None = None
+    validation_only: bool = False
 
 
 class RuleCandidateExtractor:
     RULE_TRIGGERS = [
         "classified as",
         "classification",
+        "clear-sky probability",
+        "binary cloud mask",
+        "scene-dependent threshold",
+        "threshold offset",
+        "1:1 line",
+        "local standard deviation",
+        "rho",
+        "cloudy conditions",
+        "clear-sky",
+        "validation",
         "identified as",
         "detected",
         "detecting",
@@ -55,7 +68,8 @@ class RuleCandidateExtractor:
 
     def extract(self, chunks: list[Chunk], top_k: int | None = None) -> list[ExtractedRule]:
         rules = [rule for chunk in chunks for rule in self._extract_from_chunk(chunk)]
-        rules.sort(key=lambda rule: rule.score, reverse=True)
+        rules.sort(key=self._ranking_key, reverse=True)
+        rules = self._deduplicate(rules)
         if top_k is not None:
             return rules[:top_k]
         return rules
@@ -73,6 +87,8 @@ class RuleCandidateExtractor:
             target_classes = self._target_classes(lower, chunk.metadata.target_classes)
             features = self._features(span, chunk.metadata.bands_or_layers + chunk.metadata.indices)
             rule_type = self._rule_type(normalized_conditions, lower)
+            dynamic_threshold_formula = self._dynamic_threshold_formula(normalized_conditions)
+            rule_scope = self._rule_scope(lower)
             score = self._score(chunk, evidence_terms, normalized_conditions, rule_type)
             if score < 0.35:
                 continue
@@ -92,6 +108,9 @@ class RuleCandidateExtractor:
                     section_title=chunk.section_title,
                     score=round(score, 3),
                     evidence_terms=evidence_terms,
+                    rule_scope=rule_scope,
+                    dynamic_threshold_formula=dynamic_threshold_formula,
+                    validation_only=rule_scope == "validation",
                 )
             )
         return rules
@@ -146,6 +165,9 @@ class RuleCandidateExtractor:
             ("NDVI", "NDVI"),
             ("NDWI", "NDWI"),
             ("NDSI", "NDSI"),
+            ("clear-sky probability", "clear_sky_probability"),
+            ("local standard deviation", "local_standard_deviation"),
+            ("rho", "rho"),
         ]:
             if phrase.lower() in lower and normalized not in features:
                 features.append(normalized)
@@ -153,6 +175,29 @@ class RuleCandidateExtractor:
 
     def _normalized_conditions(self, text: str) -> list[str]:
         normalized: list[str] = []
+        comparable_text = re.sub(r"\s+", " ", text.replace("\u03c1", "rho"))
+        for match in re.finditer(
+            r"\bclear-sky probability\b.*?\bthreshold of\s+(-?\d+(?:\.\d+)?)\b",
+            comparable_text,
+            re.IGNORECASE,
+        ):
+            condition = f"CLEAR_SKY_PROBABILITY >= {float(match.group(1))}"
+            if condition not in normalized:
+                normalized.append(condition)
+        for match in re.finditer(r"\b(?:rho|\u03c1)\s*(>=|>|<=|<)\s*(-?\d+(?:\.\d+)?)\b", comparable_text, re.IGNORECASE):
+            condition = f"RHO {match.group(1)} {float(match.group(2))}"
+            if condition not in normalized:
+                normalized.append(condition)
+        for match in re.finditer(
+            r"\b(?:local standard deviations?|LSD values?|LSD)\b.*?(>=|>|<=|<)\s*(-?\d+(?:\.\d+)?)\s*(K|C)?\b",
+            comparable_text,
+            re.IGNORECASE,
+        ):
+            condition = f"LSD {match.group(1)} {float(match.group(2))}"
+            if match.group(3):
+                condition = f"{condition} {match.group(3).upper()}"
+            if condition not in normalized:
+                normalized.append(condition)
         patterns = [
             (r"\b(BT)\s+(below|under|less than)\s+(-?\d+(?:\.\d+)?)\s*(K|C)\b", "<"),
             (r"\b(BT)\s+(above|over|greater than|exceeded)\s+(-?\d+(?:\.\d+)?)\s*(K|C)\b", ">"),
@@ -161,13 +206,14 @@ class RuleCandidateExtractor:
             (r"\b(NDVI|NDWI|NDSI|BT)\s*(>=|>|<=|<)\s*(-?\d+(?:\.\d+)?)\s*(K|C)?\b", None),
         ]
         for pattern, default_operator in patterns:
-            for match in re.finditer(pattern, text, re.IGNORECASE):
-                feature = match.group(1).upper()
+            for match in re.finditer(pattern, comparable_text, re.IGNORECASE):
                 if default_operator is None:
+                    feature = match.group(1).upper()
                     operator = match.group(2)
                     value = float(match.group(3))
                     unit = match.group(4) or ""
                 else:
+                    feature = match.group(1).upper()
                     operator = default_operator
                     value = float(match.group(3))
                     unit = match.group(4) if len(match.groups()) >= 4 else ""
@@ -176,7 +222,52 @@ class RuleCandidateExtractor:
                     condition = f"{condition} {unit.upper()}"
                 if condition not in normalized:
                     normalized.append(condition)
+        offset_match = re.search(r"\badditional\s+(-?\d+(?:\.\d+)?)\s*(K|C)\b", comparable_text, re.IGNORECASE)
+        if offset_match and "scene-dependent threshold" in comparable_text.lower():
+            condition = f"SCENE_THRESHOLD_OFFSET + {float(offset_match.group(1))} {offset_match.group(2).upper()}"
+            if condition not in normalized:
+                normalized.append(condition)
+        if "scene-dependent threshold" in comparable_text.lower() and "SCENE_DEPENDENT_THRESHOLD" not in normalized:
+            normalized.append("SCENE_DEPENDENT_THRESHOLD")
+        if "threshold offset" in comparable_text.lower() and "SCENE_THRESHOLD_OFFSET = c" not in normalized:
+            normalized.append("SCENE_THRESHOLD_OFFSET = c")
         return normalized
+
+    def _deduplicate(self, rules: list[ExtractedRule]) -> list[ExtractedRule]:
+        unique_rules: list[ExtractedRule] = []
+        seen: set[tuple[str, str, tuple[str, ...], tuple[str, ...], str]] = set()
+        for rule in rules:
+            normalized_text = re.sub(r"\W+", " ", rule.condition_text.lower()).strip()
+            text_key = "" if rule.normalized_conditions else normalized_text[:160]
+            key = (
+                rule.rule_type,
+                rule.rule_scope,
+                tuple(rule.normalized_conditions),
+                tuple(rule.target_classes),
+                text_key,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_rules.append(rule)
+        return unique_rules
+
+    def _ranking_key(self, rule: ExtractedRule) -> tuple[float, int, int]:
+        type_boosts = {
+            "dynamic_threshold_rule": 0.16,
+            "threshold_rule": 0.08,
+            "comparative_rule": 0.03,
+        }
+        scope_boosts = {
+            "classification": 2,
+            "algorithm": 1,
+            "validation": 0,
+        }
+        return (
+            min(rule.score + type_boosts.get(rule.rule_type, 0.0), 1.2),
+            len(rule.normalized_conditions),
+            scope_boosts.get(rule.rule_scope, 0),
+        )
 
     def _raw_thresholds(self, text: str) -> list[str]:
         thresholds: list[str] = []
@@ -186,16 +277,38 @@ class RuleCandidateExtractor:
             re.IGNORECASE,
         ):
             value = match.group(0).strip()
-            if value and re.search(r"\d", value) and value not in thresholds:
+            if not value or not re.search(r"\d", value):
+                continue
+            if not re.search(r"threshold|cutoff|criterion|criteria|value|values|>=|>|<=|<|\bK\b|\bC\b|%|dB", value, re.IGNORECASE):
+                continue
+            if value not in thresholds:
                 thresholds.append(value)
         return thresholds
 
     def _rule_type(self, normalized_conditions: list[str], lower: str) -> str:
+        if "scene-dependent threshold" in lower or "threshold offset" in lower or any(
+            condition.startswith("SCENE_THRESHOLD_OFFSET") or condition == "SCENE_DEPENDENT_THRESHOLD"
+            for condition in normalized_conditions
+        ):
+            return "dynamic_threshold_rule"
         if normalized_conditions:
             return "threshold_rule"
         if any(term in lower for term in ["higher", "lower", "warmer", "colder", "brighter", "darker"]):
             return "comparative_rule"
         return "rule_candidate"
+
+    def _rule_scope(self, lower: str) -> str:
+        if any(term in lower for term in ["validation", "truth", "scene-dependent threshold", "warm s7"]):
+            return "validation"
+        if any(term in lower for term in ["configuration", "bayesian calculation", "probability"]):
+            return "algorithm"
+        return "classification"
+
+    def _dynamic_threshold_formula(self, normalized_conditions: list[str]) -> str | None:
+        for condition in normalized_conditions:
+            if condition.startswith("SCENE_THRESHOLD_OFFSET") or condition == "SCENE_DEPENDENT_THRESHOLD":
+                return "scene_threshold = 1:1 S7/S8 offset + uncertainty_margin"
+        return None
 
     def _score(
         self,
@@ -206,6 +319,8 @@ class RuleCandidateExtractor:
     ) -> float:
         score = 0.0
         if rule_type == "threshold_rule":
+            score += 0.35
+        elif rule_type == "dynamic_threshold_rule":
             score += 0.35
         elif rule_type == "comparative_rule":
             score += 0.2

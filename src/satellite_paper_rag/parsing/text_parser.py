@@ -31,15 +31,29 @@ SECTION_TYPES = {
 
 
 def normalize_section_type(title: str) -> str:
-    cleaned = title.strip().lower().rstrip(":")
-    return SECTION_TYPES.get(cleaned, "unknown")
+    cleaned = re.sub(r"^\d+(?:\.\d+)*\s+", "", title.strip().lower().rstrip(":"))
+    if cleaned in SECTION_TYPES:
+        return SECTION_TYPES[cleaned]
+    if "introduction" in cleaned:
+        return "introduction"
+    if "method" in cleaned or "bayesian" in cleaned or "cloud detection" in cleaned:
+        return "method"
+    if "imagery" in cleaned or "data" in cleaned:
+        return "dataset"
+    if "result" in cleaned or "performance" in cleaned:
+        return "result"
+    if "discussion" in cleaned or "conclusion" in cleaned:
+        return "conclusion"
+    if "reference" in cleaned:
+        return "reference"
+    return "unknown"
 
 
 def detect_block_type(text: str) -> str:
     stripped = text.strip()
-    if re.match(r"^(figure|fig\.)\s+\d+", stripped, re.IGNORECASE):
+    if re.match(r"^(figure|fig\.)\s*\d+", stripped, re.IGNORECASE):
         return "figure_caption"
-    if re.match(r"^table\s+\d+", stripped, re.IGNORECASE):
+    if re.match(r"^table\s*\d+", stripped, re.IGNORECASE):
         return "table_caption"
     return "paragraph"
 

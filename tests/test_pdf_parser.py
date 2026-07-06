@@ -31,6 +31,63 @@ class PdfPaperParserTest(unittest.TestCase):
             self.assertTrue(all(block.page_start == 1 for block in blocks))
             self.assertTrue(all(block.page_end == 1 for block in blocks))
 
+    def test_parses_numbered_sections_captions_tables_and_quality_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "structured.pdf"
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_textbox(
+                fitz.Rect(72, 72, 520, 260),
+                "\n".join(
+                    [
+                        "Production PDF Test",
+                        "1 Introduction",
+                        "Cloud detection algorithms compare reflectance and thermal channels.",
+                        "4.1 Bayesian cloud detection",
+                        "A threshold of 0.9 is applied to clear-sky probability for a binary cloud mask.",
+                    ]
+                ),
+            )
+            page.insert_textbox(
+                fitz.Rect(72, 280, 520, 390),
+                "\n".join(
+                    [
+                        "Fig. 8. Threshold-based cloud masking of test-scenes with warm S7 clouds.",
+                        "The S8 and S7 brightness temperatures determine the threshold for identifying cloudy pixels.",
+                    ]
+                ),
+            )
+            page.insert_textbox(
+                fitz.Rect(72, 420, 520, 560),
+                "\n".join(
+                    [
+                        "Table 4",
+                        "SLSTR-A segments, extraction limits and offset used for coastal cloud detection performance analysis.",
+                        "Extract Date Time x-limits y-limits c",
+                        "1 21/01/2020 01:28:40 400:600 0:600 0.0",
+                    ]
+                ),
+            )
+            doc.save(pdf_path)
+            doc.close()
+
+            paper = PdfPaperParser().parse(pdf_path)
+
+            self.assertEqual(paper.title, "Production PDF Test")
+            section_titles = [section.title for section in paper.sections]
+            self.assertIn("1 Introduction", section_titles)
+            self.assertIn("4.1 Bayesian cloud detection", section_titles)
+            self.assertGreaterEqual(paper.quality_report.captions_detected, 2)
+            self.assertGreaterEqual(paper.quality_report.tables_detected, 1)
+            self.assertGreaterEqual(len(paper.tables), 1)
+
+            blocks = [block for section in paper.sections for block in section.blocks]
+            figure_blocks = [block for block in blocks if block.block_type == "figure_caption"]
+            table_blocks = [block for block in blocks if block.block_type == "table_text"]
+            self.assertTrue(any("brightness temperatures determine the threshold" in block.text for block in figure_blocks))
+            self.assertTrue(any("x-limits" in block.text and "0.0" in block.text for block in table_blocks))
+            self.assertTrue(all("bbox" in block.metadata for block in blocks))
+
 
 if __name__ == "__main__":
     unittest.main()
