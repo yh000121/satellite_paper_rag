@@ -14,3 +14,5 @@ dist/
 *.egg-info/
 data/papers/*
 !data/papers/.gitkeep
+data/index/*
+!data/index/.gitkeep
