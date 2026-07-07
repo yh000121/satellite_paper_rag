@@ -52,6 +52,7 @@ class PdfPaperParser:
         library_tables, table_warnings = self._extract_pdfplumber_tables(source)
         warnings.extend(table_warnings)
         merged_lines, fallback_tables, captions_detected, tables_detected = self._merge_captions_and_tables(raw_lines)
+        merged_lines = self._reflow_text_lines(merged_lines)
         tables = library_tables or fallback_tables
         tables_detected = max(tables_detected, len(tables))
         raw_text = "\n\n".join(raw_pages)
@@ -224,6 +225,43 @@ class PdfPaperParser:
             source_kind=source_kind,
         )
 
+    def _reflow_text_lines(self, lines: list[RawPdfLine]) -> list[RawPdfLine]:
+        reflowed: list[RawPdfLine] = []
+        paragraph_lines: list[RawPdfLine] = []
+
+        def flush_paragraph() -> None:
+            nonlocal paragraph_lines
+            if paragraph_lines:
+                reflowed.append(self._combine_lines(paragraph_lines, "text"))
+                paragraph_lines = []
+
+        for line in lines:
+            if not self._can_reflow_line(line):
+                flush_paragraph()
+                reflowed.append(line)
+                continue
+            if paragraph_lines and not self._same_layout_block(paragraph_lines[-1], line):
+                flush_paragraph()
+            paragraph_lines.append(line)
+        flush_paragraph()
+        return reflowed
+
+    def _can_reflow_line(self, line: RawPdfLine) -> bool:
+        if line.source_kind != "text":
+            return False
+        if detect_block_type(line.text) != "paragraph":
+            return False
+        if self._heading_level(line.text) is not None:
+            return False
+        return True
+
+    def _same_layout_block(self, previous: RawPdfLine, current: RawPdfLine) -> bool:
+        if previous.page_number != current.page_number:
+            return False
+        if previous.bbox is None or current.bbox is None:
+            return False
+        return all(abs(left - right) < 1.0 for left, right in zip(previous.bbox, current.bbox))
+
     def _table_rows(self, lines: list[RawPdfLine]) -> list[list[str]]:
         rows: list[list[str]] = []
         for line in lines[1:]:
@@ -298,7 +336,17 @@ class PdfPaperParser:
 
     def _clean_line(self, line: str) -> str:
         cleaned = re.sub(r"\s+", " ", line).strip()
-        return cleaned.replace("\u00ad", "")
+        replacements = {
+            "\u00ad": "",
+            "老": "ρ",
+            "¦Ěm": "μm",
+            "每": "-",
+            "＆": "'",
+            "＊": "'",
+        }
+        for source, target in replacements.items():
+            cleaned = cleaned.replace(source, target)
+        return cleaned
 
     def _is_page_artifact(self, text: str) -> bool:
         if re.fullmatch(r"\d{1,3}", text):

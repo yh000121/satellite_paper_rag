@@ -85,6 +85,64 @@ class ChunkingPipelineTest(unittest.TestCase):
         self.assertGreater(len(paragraph_chunks), 1)
         self.assertTrue(all(len(chunk.text) <= 120 for chunk in paragraph_chunks))
 
+    def test_rule_candidate_expands_short_rule_fragment_with_neighboring_context(self):
+        blocks = [
+            PaperBlock(
+                block_id="block_0001",
+                text="Fig. 6b shows the clear-sky probability from the operational Bayesian calculation.",
+                block_type="paragraph",
+                page_start=8,
+                page_end=8,
+                order_index=0,
+            ),
+            PaperBlock(
+                block_id="block_0002",
+                text="A threshold of 0.9 would typically be applied.",
+                block_type="paragraph",
+                page_start=8,
+                page_end=8,
+                order_index=1,
+            ),
+            PaperBlock(
+                block_id="block_0003",
+                text="The result is a binary cloud mask over the ocean.",
+                block_type="paragraph",
+                page_start=8,
+                page_end=8,
+                order_index=2,
+            ),
+        ]
+        paper = Paper(
+            paper_id="context_paper",
+            title="SLSTR Cloud Detection",
+            authors=[],
+            year=None,
+            source_path=None,
+            source_hash=compute_source_hash(" ".join(block.text for block in blocks)),
+            source_type="text",
+            sections=[
+                PaperSection(
+                    section_id="section_001",
+                    title="Results",
+                    normalized_type="result",
+                    level=1,
+                    blocks=blocks,
+                )
+            ],
+        )
+
+        chunks = PaperChunkingPipeline(DomainVocabulary.default()).chunk(paper)
+
+        rule_chunks = [chunk for chunk in chunks if chunk.chunk_type == "rule_candidate"]
+        self.assertTrue(
+            any(
+                "clear-sky probability" in chunk.text
+                and "threshold of 0.9" in chunk.text
+                and "binary cloud mask" in chunk.text
+                for chunk in rule_chunks
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

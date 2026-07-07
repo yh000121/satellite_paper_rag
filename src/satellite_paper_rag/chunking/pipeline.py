@@ -22,7 +22,7 @@ class PaperChunkingPipeline:
             parent_index = len(chunks)
             chunks.append(parent)
             child_ids: list[str] = []
-            for block in section.blocks:
+            for block_index, block in enumerate(section.blocks):
                 for paragraph in self._paragraph_child_chunks(paper, parent.chunk_id, block, section.title, section.normalized_type):
                     chunks.append(paragraph)
                     child_ids.append(paragraph.chunk_id)
@@ -33,7 +33,14 @@ class PaperChunkingPipeline:
                     figure_table = self._figure_table_chunk(paper, parent.chunk_id, block, section.title, section.normalized_type)
                     chunks.append(figure_table)
                     child_ids.append(figure_table.chunk_id)
-                rule = self._rule_candidate_chunk(paper, parent.chunk_id, block, section.title, section.normalized_type)
+                rule = self._rule_candidate_chunk(
+                    paper,
+                    parent.chunk_id,
+                    section.blocks,
+                    block_index,
+                    section.title,
+                    section.normalized_type,
+                )
                 if rule is not None:
                     chunks.append(rule)
                     child_ids.append(rule.chunk_id)
@@ -68,6 +75,8 @@ class PaperChunkingPipeline:
         )
 
     def _paragraph_child_chunks(self, paper: Paper, parent_id: str, block: PaperBlock, section_title: str, section_type: str) -> list[Chunk]:
+        if self._is_low_information_paragraph(block.text):
+            return []
         parts = [block.text]
         if len(block.text) > self.config.max_child_chars:
             parts = self.recursive_splitter.split(block.text)
@@ -133,8 +142,19 @@ class PaperChunkingPipeline:
             suffix=block.block_id,
         )
 
-    def _rule_candidate_chunk(self, paper: Paper, parent_id: str, block: PaperBlock, section_title: str, section_type: str) -> Chunk | None:
-        metadata = self.enricher.enrich(block.text)
+    def _rule_candidate_chunk(
+        self,
+        paper: Paper,
+        parent_id: str,
+        blocks: list[PaperBlock],
+        block_index: int,
+        section_title: str,
+        section_type: str,
+    ) -> Chunk | None:
+        block = blocks[block_index]
+        context_blocks = self._rule_context_blocks(blocks, block_index)
+        context_text = " ".join(context_block.text for context_block in context_blocks)
+        metadata = self.enricher.enrich(context_text)
         signal_count = sum(
             1
             for value in [
@@ -152,16 +172,31 @@ class PaperChunkingPipeline:
         return self._make_chunk(
             paper,
             "rule_candidate",
-            block.text,
+            context_text,
             parent_id,
-            [block.block_id],
-            block.page_start,
-            block.page_end,
+            [context_block.block_id for context_block in context_blocks],
+            self._min_page(context_blocks),
+            self._max_page(context_blocks),
             section_title,
             section_type,
             "rule_extraction",
             suffix=block.block_id,
         )
+
+    def _rule_context_blocks(self, blocks: list[PaperBlock], block_index: int) -> list[PaperBlock]:
+        start = max(block_index - self.config.rule_context_window_blocks, 0)
+        end = min(block_index + self.config.rule_context_window_blocks + 1, len(blocks))
+        return [
+            block
+            for block in blocks[start:end]
+            if block.block_type not in {"table_text", "table_caption"} or block_index == blocks.index(block)
+        ]
+
+    def _is_low_information_paragraph(self, text: str) -> bool:
+        if len(text.strip()) >= self.config.min_paragraph_child_chars:
+            return False
+        metadata = self.enricher.enrich(text)
+        return not (metadata.thresholds or metadata.bands_or_layers or metadata.indices or metadata.evidence_types)
 
     def _make_chunk(
         self,

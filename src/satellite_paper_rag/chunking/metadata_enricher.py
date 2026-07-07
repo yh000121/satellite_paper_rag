@@ -91,6 +91,8 @@ class MetadataEnricher:
         normalized_values: list[str] = []
         units: list[str] = []
         patterns = [
+            (r"\b(clear-sky probability)\b.*?\bthreshold of\s+(-?\d+(?:\.\d+)?)\b", ">="),
+            (r"\bthreshold of\s+(-?\d+(?:\.\d+)?)\b", "="),
             (r"\b(BT)\s+(below|under|less than)\s+(-?\d+(?:\.\d+)?)\s*(K|C)\b", "<"),
             (r"\b(NDVI|NDWI|NDSI)\s+(greater than|above|over)\s+(-?\d+(?:\.\d+)?)\b", ">"),
             (r"\b(NDVI|NDWI|NDSI)\s*(>=|>|<=|<)\s*(-?\d+(?:\.\d+)?)\b", None),
@@ -98,12 +100,23 @@ class MetadataEnricher:
         for pattern, default_operator in patterns:
             for match in re.finditer(pattern, text, re.IGNORECASE):
                 original = match.group(0)
-                feature = match.group(1).upper()
-                if default_operator is None:
+                if match.lastindex == 2 and default_operator in {"=", ">="}:
+                    feature = match.group(1).upper().replace("-", "_").replace(" ", "_")
+                    operator = default_operator
+                    value = float(match.group(2))
+                    unit = ""
+                elif match.lastindex == 1 and default_operator == "=":
+                    feature = "THRESHOLD"
+                    operator = default_operator
+                    value = float(match.group(1))
+                    unit = ""
+                elif default_operator is None:
+                    feature = match.group(1).upper()
                     operator = match.group(2)
                     value = float(match.group(3))
                     unit = ""
                 else:
+                    feature = match.group(1).upper()
                     operator = default_operator
                     value = float(match.group(3))
                     unit = match.group(4) if len(match.groups()) >= 4 else ""

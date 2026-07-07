@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 class ChunkingConfig:
     sentence_window_radius: int = 1
     min_rule_signal_count: int = 2
+    min_paragraph_child_chars: int = 80
+    rule_context_window_blocks: int = 1
     max_child_chars: int = 1200
     recursive_chunk_size: int = 1000
     recursive_chunk_overlap: int = 120

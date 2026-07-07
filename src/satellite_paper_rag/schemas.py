@@ -4,8 +4,8 @@ import hashlib
 from dataclasses import dataclass, field
 
 
-PARSER_VERSION = "text-parser-v1"
-CHUNKER_VERSION = "multi-granularity-v1"
+PARSER_VERSION = "text-parser-v2"
+CHUNKER_VERSION = "multi-granularity-v2"
 VOCABULARY_VERSION = "remote-sensing-en-v1"
 
 

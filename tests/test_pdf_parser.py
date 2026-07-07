@@ -88,6 +88,47 @@ class PdfPaperParserTest(unittest.TestCase):
             self.assertTrue(any("x-limits" in block.text and "0.0" in block.text for block in table_blocks))
             self.assertTrue(all("bbox" in block.metadata for block in blocks))
 
+    def test_reflows_fragmented_pdf_lines_into_paragraphs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "fragmented.pdf"
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_textbox(
+                fitz.Rect(72, 72, 520, 240),
+                "\n".join(
+                    [
+                        "Fragmented PDF Test",
+                        "5 Results",
+                        "The clear-sky probability from the",
+                        "operational Bayesian calculation, to which a threshold of 0.9 would",
+                        "typically be applied to generate a binary cloud mask.",
+                    ]
+                ),
+            )
+            doc.save(pdf_path)
+            doc.close()
+
+            paper = PdfPaperParser().parse(pdf_path)
+
+            blocks = [block for section in paper.sections for block in section.blocks]
+            block_texts = [block.text for block in blocks]
+            self.assertNotIn("The clear-sky probability from the", block_texts)
+            self.assertTrue(
+                any(
+                    "clear-sky probability from the operational Bayesian calculation" in text
+                    and "threshold of 0.9" in text
+                    and "binary cloud mask" in text
+                    for text in block_texts
+                )
+            )
+
+    def test_normalizes_pdf_font_glyph_artifacts(self):
+        parser = PdfPaperParser()
+
+        cleaned = parser._clean_line("All values of 老 > 2 at 0.6 ¦Ěm and range 0.5每0.95")
+
+        self.assertEqual(cleaned, "All values of ρ > 2 at 0.6 μm and range 0.5-0.95")
+
 
 if __name__ == "__main__":
     unittest.main()

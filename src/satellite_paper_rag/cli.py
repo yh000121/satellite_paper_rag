@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 
 from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
-from satellite_paper_rag.embeddings.client import DeterministicEmbeddingClient
+from satellite_paper_rag.embeddings.client import DashScopeEmbeddingClient, DeterministicEmbeddingClient, EmbeddingClient
 from satellite_paper_rag.embeddings.vector_index import LocalVectorIndex, VectorIndexBuilder, VectorSearchResult
 from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
@@ -14,6 +16,7 @@ from satellite_paper_rag.parsing.pdf_parser import PdfPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
 from satellite_paper_rag.retrieval.contract import RetrievalRequest, RetrievalResult
 from satellite_paper_rag.retrieval.mock_hybrid_retriever import MockHybridRetriever
+from satellite_paper_rag.schemas import CHUNKER_VERSION, Paper
 
 
 DEFAULT_PAPER_DIR = Path("data") / "papers"
@@ -118,15 +121,30 @@ def build_chunks(path: Path):
     return paper, chunks
 
 
-def build_embedder() -> DeterministicEmbeddingClient:
-    return DeterministicEmbeddingClient()
+def build_embedder(args: argparse.Namespace | None = None) -> EmbeddingClient:
+    provider = (getattr(args, "embedding_provider", None) or os.getenv("EMBEDDING_PROVIDER") or "deterministic").lower()
+    model_name = getattr(args, "embedding_model", None) if args else None
+    base_url = getattr(args, "embedding_base_url", None) if args else None
+    if provider in {"deterministic", "local"}:
+        return DeterministicEmbeddingClient()
+    if provider in {"dashscope", "qwen"}:
+        return DashScopeEmbeddingClient(
+            model_name=model_name,
+            base_url=base_url,
+            progress_callback=_embedding_progress_callback if getattr(args, "verbose", False) else None,
+        )
+    raise ValueError(f"Unsupported embedding provider: {provider}")
 
 
-def build_index_for_path(path: Path, index_dir: Path):
+def build_index_for_path(path: Path, index_dir: Path, args: argparse.Namespace | None = None):
+    log_progress(args, "Parsing and chunking paper...")
     paper, chunks = build_chunks(path)
-    embedder = build_embedder()
+    log_progress(args, f"Built {len(chunks)} chunks.")
+    embedder = build_embedder(args)
     index = LocalVectorIndex(index_dir)
+    log_progress(args, f"Embedding chunks with {embedder.model_name}...")
     index_path = VectorIndexBuilder(embedder, index).index(paper.paper_id, chunks)
+    log_progress(args, f"Index written to {index_path}.")
     return paper, chunks, embedder, index, index_path
 
 
@@ -158,7 +176,7 @@ def query_file(args: argparse.Namespace) -> int:
 
 def index_paper(args: argparse.Namespace) -> int:
     path = resolve_query_path(args)
-    paper, chunks, embedder, _, index_path = build_index_for_path(path, Path(args.index_dir))
+    paper, chunks, embedder, _, index_path = build_index_for_path(path, Path(args.index_dir), args)
     payload = {
         "paper_id": paper.paper_id,
         "title": paper.title,
@@ -174,13 +192,17 @@ def index_paper(args: argparse.Namespace) -> int:
 
 def semantic_query(args: argparse.Namespace) -> int:
     path = resolve_query_path(args)
+    log_progress(args, "Parsing and chunking paper...")
     paper, chunks = build_chunks(path)
-    embedder = build_embedder()
+    log_progress(args, f"Built {len(chunks)} chunks.")
+    embedder = build_embedder(args)
     index = LocalVectorIndex(Path(args.index_dir))
     index_status = "loaded"
-    if args.rebuild_index or not index.exists(paper.paper_id):
+    if args.rebuild_index or not index_is_compatible(index, paper, embedder):
+        log_progress(args, f"Index missing or rebuild requested; embedding chunks with {embedder.model_name}...")
         VectorIndexBuilder(embedder, index).index(paper.paper_id, chunks)
         index_status = "rebuilt" if args.rebuild_index else "created"
+    log_progress(args, "Embedding query and searching local index...")
     results = index.search(
         query=args.query,
         embedder=embedder,
@@ -207,10 +229,12 @@ def extract_rules(args: argparse.Namespace) -> int:
     candidate_chunks = chunks
     semantic_candidates: list[dict[str, object]] = []
     if args.semantic_query:
-        embedder = build_embedder()
+        embedder = build_embedder(args)
         index = LocalVectorIndex(Path(args.index_dir))
-        if args.rebuild_index or not index.exists(paper.paper_id):
+        if args.rebuild_index or not index_is_compatible(index, paper, embedder):
+            log_progress(args, f"Index missing or rebuild requested; embedding chunks with {embedder.model_name}...")
             VectorIndexBuilder(embedder, index).index(paper.paper_id, chunks)
+        log_progress(args, "Embedding semantic query and selecting candidate chunks...")
         semantic_results = index.search(
             query=args.semantic_query,
             embedder=embedder,
@@ -255,6 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     index_source.add_argument("--file")
     index_source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
     index.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
+    add_embedding_arguments(index)
     index.set_defaults(func=index_paper)
     semantic = subparsers.add_parser("semantic-query")
     semantic_source = semantic.add_mutually_exclusive_group(required=True)
@@ -264,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     semantic.add_argument("--top-k", type=int, default=5)
     semantic.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
     semantic.add_argument("--rebuild-index", action="store_true")
+    add_embedding_arguments(semantic)
     semantic.add_argument(
         "--chunk-type",
         action="append",
@@ -279,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--candidate-k", type=int, default=20)
     extract.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
     extract.add_argument("--rebuild-index", action="store_true")
+    add_embedding_arguments(extract)
     extract.add_argument(
         "--chunk-type",
         action="append",
@@ -286,6 +313,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract.set_defaults(func=extract_rules)
     return parser
+
+
+def add_embedding_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--embedding-provider",
+        default=os.getenv("EMBEDDING_PROVIDER", "deterministic"),
+        choices=["deterministic", "local", "dashscope", "qwen"],
+        help="Embedding provider. Use 'dashscope' or 'qwen' for Alibaba Cloud Model Studio/DashScope.",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        default=os.getenv("DASHSCOPE_EMBEDDING_MODEL"),
+        help="Embedding model name for the selected provider, for example text-embedding-v4.",
+    )
+    parser.add_argument(
+        "--embedding-base-url",
+        default=os.getenv("DASHSCOPE_BASE_URL"),
+        help="OpenAI-compatible embedding base URL. Defaults to DashScope compatible-mode v1 for dashscope/qwen.",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Print progress logs to stderr.")
+
+
+def log_progress(args: argparse.Namespace | None, message: str) -> None:
+    if args is not None and getattr(args, "verbose", False):
+        print(message, file=sys.stderr, flush=True)
+
+
+def _embedding_progress_callback(current: int, total: int, batch_size: int) -> None:
+    print(f"Embedding batch {current}/{total} ({batch_size} texts)...", file=sys.stderr, flush=True)
+
+
+def index_is_compatible(index: LocalVectorIndex, paper: Paper, embedder: EmbeddingClient) -> bool:
+    return index.exists(
+        paper.paper_id,
+        model_name=embedder.model_name,
+        chunker_version=CHUNKER_VERSION,
+        parser_version=paper.parser_version,
+        vocabulary_version=paper.vocabulary_version,
+        source_hash=paper.source_hash,
+    )
 
 
 def main() -> int:
