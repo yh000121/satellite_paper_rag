@@ -129,6 +129,13 @@ class PdfPaperParserTest(unittest.TestCase):
 
         self.assertEqual(cleaned, "All values of ρ > 2 at 0.6 μm and range 0.5-0.95")
 
+    def test_normalizes_rho_glyph_variant_from_pdf(self):
+        parser = PdfPaperParser()
+
+        cleaned = parser._clean_line("All values of ¦Ñ > 2 represent cloudy conditions.")
+
+        self.assertEqual(cleaned, "All values of ρ > 2 represent cloudy conditions.")
+
 
 if __name__ == "__main__":
     unittest.main()

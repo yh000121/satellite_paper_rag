@@ -10,7 +10,9 @@ from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.embeddings.client import DashScopeEmbeddingClient, DeterministicEmbeddingClient, EmbeddingClient
 from satellite_paper_rag.embeddings.vector_index import LocalVectorIndex, VectorIndexBuilder, VectorSearchResult
+from satellite_paper_rag.extraction.llm_rule_extractor import LlmRuleExtractor
 from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
+from satellite_paper_rag.llm.client import ChatCompletionClient, DashScopeChatClient
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
 from satellite_paper_rag.parsing.pdf_parser import PdfPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
@@ -136,6 +138,15 @@ def build_embedder(args: argparse.Namespace | None = None) -> EmbeddingClient:
     raise ValueError(f"Unsupported embedding provider: {provider}")
 
 
+def build_chat_client(args: argparse.Namespace | None = None) -> ChatCompletionClient:
+    provider = (getattr(args, "llm_provider", None) or os.getenv("LLM_PROVIDER") or "dashscope").lower()
+    model_name = getattr(args, "llm_model", None) if args else None
+    base_url = getattr(args, "llm_base_url", None) if args else None
+    if provider in {"dashscope", "qwen"}:
+        return DashScopeChatClient(model_name=model_name, base_url=base_url)
+    raise ValueError(f"Unsupported LLM provider: {provider}")
+
+
 def build_index_for_path(path: Path, index_dir: Path, args: argparse.Namespace | None = None):
     log_progress(args, "Parsing and chunking paper...")
     paper, chunks = build_chunks(path)
@@ -170,7 +181,7 @@ def query_file(args: argparse.Namespace) -> int:
         "query": args.query,
         "results": [result_to_dict(result) for result in results],
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    emit_json(payload)
     return 0
 
 
@@ -186,7 +197,7 @@ def index_paper(args: argparse.Namespace) -> int:
         "embedding_dimension": embedder.dimension,
         "index_path": str(index_path),
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    emit_json(payload)
     return 0
 
 
@@ -219,7 +230,7 @@ def semantic_query(args: argparse.Namespace) -> int:
         "index_status": index_status,
         "results": [vector_result_to_dict(result) for result in results],
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    emit_json(payload)
     return 0
 
 
@@ -253,7 +264,49 @@ def extract_rules(args: argparse.Namespace) -> int:
         "semantic_candidates": semantic_candidates,
         "rules": [rule_to_dict(rule) for rule in rules],
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    emit_json(payload)
+    return 0
+
+
+def llm_extract_rules(args: argparse.Namespace) -> int:
+    path = resolve_query_path(args)
+    log_progress(args, "Parsing and chunking paper...")
+    paper, chunks = build_chunks(path)
+    log_progress(args, f"Built {len(chunks)} chunks.")
+    embedder = build_embedder(args)
+    index = LocalVectorIndex(Path(args.index_dir))
+    index_status = "loaded"
+    if args.rebuild_index or not index_is_compatible(index, paper, embedder):
+        log_progress(args, f"Index missing or rebuild requested; embedding chunks with {embedder.model_name}...")
+        VectorIndexBuilder(embedder, index).index(paper.paper_id, chunks)
+        index_status = "rebuilt" if args.rebuild_index else "created"
+    log_progress(args, "Retrieving evidence chunks for LLM rule extraction...")
+    semantic_results = index.search(
+        query=args.query,
+        embedder=embedder,
+        paper_id=paper.paper_id,
+        top_k=args.candidate_k,
+        chunk_types=args.chunk_type,
+    )
+    evidence_chunks = [result.chunk for result in semantic_results]
+    log_progress(args, f"Calling LLM with {len(evidence_chunks)} evidence chunks...")
+    extraction = LlmRuleExtractor(build_chat_client(args)).extract(
+        query=args.query,
+        evidence_chunks=evidence_chunks,
+        requires_threshold=args.requires_threshold,
+    )
+    payload = {
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "source_type": paper.source_type,
+        "query": args.query,
+        "embedding_model": embedder.model_name,
+        "index_status": index_status,
+        "llm_model": extraction["llm_model"],
+        "semantic_candidates": [vector_result_to_dict(result) for result in semantic_results],
+        "rules": extraction["rules"],
+    }
+    emit_json(payload)
     return 0
 
 
@@ -312,6 +365,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
     )
     extract.set_defaults(func=extract_rules)
+    llm_extract = subparsers.add_parser("llm-extract-rules")
+    llm_extract_source = llm_extract.add_mutually_exclusive_group(required=True)
+    llm_extract_source.add_argument("--file")
+    llm_extract_source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
+    llm_extract.add_argument("--query", required=True)
+    llm_extract.add_argument("--candidate-k", type=int, default=8)
+    llm_extract.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
+    llm_extract.add_argument("--rebuild-index", action="store_true")
+    llm_extract.add_argument("--requires-threshold", action="store_true")
+    add_embedding_arguments(llm_extract)
+    add_llm_arguments(llm_extract)
+    llm_extract.add_argument(
+        "--chunk-type",
+        action="append",
+        default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
+    )
+    llm_extract.set_defaults(func=llm_extract_rules)
     return parser
 
 
@@ -333,6 +403,39 @@ def add_embedding_arguments(parser: argparse.ArgumentParser) -> None:
         help="OpenAI-compatible embedding base URL. Defaults to DashScope compatible-mode v1 for dashscope/qwen.",
     )
     parser.add_argument("--verbose", action="store_true", help="Print progress logs to stderr.")
+
+
+def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--llm-provider",
+        default=os.getenv("LLM_PROVIDER", "dashscope"),
+        choices=["dashscope", "qwen"],
+        help="LLM provider. Use 'dashscope' or 'qwen' for Alibaba Cloud Model Studio/DashScope.",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=os.getenv("DASHSCOPE_LLM_MODEL") or os.getenv("QWEN_LLM_MODEL"),
+        help="LLM model name, for example qwen-plus.",
+    )
+    parser.add_argument(
+        "--llm-base-url",
+        default=os.getenv("DASHSCOPE_LLM_BASE_URL") or os.getenv("DASHSCOPE_BASE_URL"),
+        help="OpenAI-compatible chat completion base URL. Defaults to DashScope compatible-mode v1.",
+    )
+
+
+def emit_json(payload: dict[str, object], stream: object | None = None) -> None:
+    output = stream or sys.stdout
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        output.write(text)  # type: ignore[attr-defined]
+        return
+    except UnicodeEncodeError:
+        buffer = getattr(output, "buffer", None)
+        if buffer is None:
+            raise
+        buffer.write(text.encode("utf-8"))
+        buffer.flush()
 
 
 def log_progress(args: argparse.Namespace | None, message: str) -> None:

@@ -1,15 +1,26 @@
 import json
 import os
+import io
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+from satellite_paper_rag.cli import emit_json
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class CliTest(unittest.TestCase):
+    def test_emit_json_writes_utf8_bytes_for_math_symbols(self):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="gbk")
+
+        emit_json({"condition": "1 − clear_sky_probability"}, stream=stream)
+
+        stream.flush()
+        self.assertIn("1 − clear_sky_probability", stream.buffer.getvalue().decode("utf-8"))
+
     def test_query_cli_returns_json_evidence(self):
         env = dict(os.environ)
         env["PYTHONPATH"] = "src"

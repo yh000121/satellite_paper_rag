@@ -339,6 +339,7 @@ class PdfPaperParser:
         replacements = {
             "\u00ad": "",
             "老": "ρ",
+            "¦Ñ": "ρ",
             "¦Ěm": "μm",
             "每": "-",
             "＆": "'",
