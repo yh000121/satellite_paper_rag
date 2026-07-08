@@ -10,6 +10,7 @@ from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.embeddings.client import DashScopeEmbeddingClient, DeterministicEmbeddingClient, EmbeddingClient
 from satellite_paper_rag.embeddings.vector_index import LocalVectorIndex, VectorIndexBuilder, VectorSearchResult
+from satellite_paper_rag.evaluation.rule_eval import evaluate_extraction_payload, load_eval_cases
 from satellite_paper_rag.extraction.llm_rule_extractor import LlmRuleExtractor
 from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
 from satellite_paper_rag.llm.client import ChatCompletionClient, DashScopeChatClient
@@ -310,6 +311,57 @@ def llm_extract_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def eval_rules(args: argparse.Namespace) -> int:
+    path = resolve_query_path(args)
+    eval_cases = load_eval_cases(Path(args.eval_file))
+    log_progress(args, "Parsing and chunking paper...")
+    paper, chunks = build_chunks(path)
+    log_progress(args, f"Built {len(chunks)} chunks.")
+    embedder = build_embedder(args)
+    index = LocalVectorIndex(Path(args.index_dir))
+    index_status = "loaded"
+    if args.rebuild_index or not index_is_compatible(index, paper, embedder):
+        log_progress(args, f"Index missing or rebuild requested; embedding chunks with {embedder.model_name}...")
+        VectorIndexBuilder(embedder, index).index(paper.paper_id, chunks)
+        index_status = "rebuilt" if args.rebuild_index else "created"
+    extractor = LlmRuleExtractor(build_chat_client(args))
+    results = []
+    for eval_case in eval_cases:
+        log_progress(args, f"Running eval case {eval_case.case_id}...")
+        semantic_results = index.search(
+            query=eval_case.query,
+            embedder=embedder,
+            paper_id=paper.paper_id,
+            top_k=eval_case.candidate_k,
+            chunk_types=args.chunk_type,
+        )
+        extraction = extractor.extract(
+            query=eval_case.query,
+            evidence_chunks=[result.chunk for result in semantic_results],
+            requires_threshold=eval_case.requires_threshold,
+        )
+        eval_result = evaluate_extraction_payload(eval_case, {"rules": extraction["rules"]})
+        result_payload = eval_result.to_dict()
+        result_payload["actual_rules"] = extraction["rules"]
+        result_payload["semantic_candidate_ids"] = [result.chunk.chunk_id for result in semantic_results]
+        results.append(result_payload)
+    passed = sum(1 for result in results if result["passed"])
+    payload = {
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "eval_file": args.eval_file,
+        "embedding_model": embedder.model_name,
+        "llm_model": extractor.chat_client.model_name,
+        "index_status": index_status,
+        "total": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
+        "results": results,
+    }
+    emit_json(payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="satellite_paper_rag")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -382,6 +434,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
     )
     llm_extract.set_defaults(func=llm_extract_rules)
+    eval_parser = subparsers.add_parser("eval-rules")
+    eval_source = eval_parser.add_mutually_exclusive_group(required=True)
+    eval_source.add_argument("--file")
+    eval_source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
+    eval_parser.add_argument("--eval-file", required=True)
+    eval_parser.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
+    eval_parser.add_argument("--rebuild-index", action="store_true")
+    add_embedding_arguments(eval_parser)
+    add_llm_arguments(eval_parser)
+    eval_parser.add_argument(
+        "--chunk-type",
+        action="append",
+        default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
+    )
+    eval_parser.set_defaults(func=eval_rules)
     return parser
 
 

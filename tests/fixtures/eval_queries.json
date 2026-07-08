@@ -1,0 +1,62 @@
+[
+  {
+    "case_id": "clear_sky_probability_0_72_cloud",
+    "query": "Given a pixel has clear-sky probability 0.72, what paper rule helps decide whether its final class is cloud, ice, or sea?",
+    "expected_final_class": "cloud",
+    "expected_threshold_value": 0.9,
+    "expected_evidence_contains": "threshold of 0.9",
+    "acceptable_matches": [
+      {
+        "expected_rule_direction": "positive_evidence",
+        "expected_operator": "<"
+      },
+      {
+        "expected_rule_direction": "negative_evidence",
+        "expected_operator": ">="
+      }
+    ],
+    "requires_threshold": true,
+    "candidate_k": 8
+  },
+  {
+    "case_id": "lsd_0_35_cloud",
+    "query": "Given a pixel has local standard deviation of brightness temperature 0.35 K, what paper rule helps decide whether its final class is cloud, ice, or sea?",
+    "expected_final_class": "cloud",
+    "expected_rule_direction": "positive_evidence",
+    "expected_operator": ">",
+    "expected_threshold_value": 0.2,
+    "expected_evidence_contains": "cloudy conditions are more probable",
+    "requires_threshold": true,
+    "candidate_k": 5
+  },
+  {
+    "case_id": "rho_2_4_cloud",
+    "query": "Given a pixel has rho value 2.4, what paper rule helps decide whether its final class is cloud, ice, or sea?",
+    "expected_final_class": "cloud",
+    "expected_rule_direction": "positive_evidence",
+    "expected_operator": ">",
+    "expected_threshold_value": 2.0,
+    "expected_evidence_contains": "represent cloudy conditions",
+    "requires_threshold": true,
+    "candidate_k": 5
+  },
+  {
+    "case_id": "s7_s8_above_dotted_line_cloud",
+    "query": "Given a pixel lies above the dotted line in Fig. 8c where pixels above the line are classified as cloud, what paper rule helps decide whether its final class is cloud, ice, or sea?",
+    "expected_final_class": "cloud",
+    "expected_rule_direction": "positive_evidence",
+    "expected_evidence_contains": "above the dotted line would be classified as cloud",
+    "requires_threshold": false,
+    "candidate_k": 10
+  },
+  {
+    "case_id": "bright_reflectance_ice_qualitative",
+    "query": "Given a pixel is in an open ocean or sea-ice boundary area with bright visible reflectance and small thermal differences, what paper evidence helps decide whether its final class is ice or sea?",
+    "expected_final_class": "ice",
+    "expected_rule_direction": "positive_evidence",
+    "expected_operator": "qualitative_comparison",
+    "expected_evidence_contains": "brighter ice or cloud surfaces and the darker ocean",
+    "requires_threshold": false,
+    "candidate_k": 8
+  }
+]
