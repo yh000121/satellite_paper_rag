@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from satellite_paper_rag.application.rule_engine import RuleApplicationEngine
 from satellite_paper_rag.chunking.pipeline import PaperChunkingPipeline
 from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.embeddings.client import DashScopeEmbeddingClient, DeterministicEmbeddingClient, EmbeddingClient
@@ -14,11 +15,13 @@ from satellite_paper_rag.evaluation.rule_eval import evaluate_extraction_payload
 from satellite_paper_rag.extraction.llm_rule_extractor import LlmRuleExtractor
 from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
 from satellite_paper_rag.llm.client import ChatCompletionClient, DashScopeChatClient
+from satellite_paper_rag.observations.io import load_observations
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
 from satellite_paper_rag.parsing.pdf_parser import PdfPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
 from satellite_paper_rag.retrieval.contract import RetrievalRequest, RetrievalResult
 from satellite_paper_rag.retrieval.mock_hybrid_retriever import MockHybridRetriever
+from satellite_paper_rag.rules.library import build_rule_library, load_rule_library, write_rule_library
 from satellite_paper_rag.schemas import CHUNKER_VERSION, Paper
 
 
@@ -296,6 +299,21 @@ def llm_extract_rules(args: argparse.Namespace) -> int:
         evidence_chunks=evidence_chunks,
         requires_threshold=args.requires_threshold,
     )
+    saved_rules_file = None
+    if args.save_rules:
+        rule_library = build_rule_library(
+            paper_id=paper.paper_id,
+            title=paper.title,
+            rules=extraction["rules"],
+            metadata={
+                "query": args.query,
+                "embedding_model": embedder.model_name,
+                "llm_model": extraction["llm_model"],
+                "index_status": index_status,
+            },
+        )
+        write_rule_library(rule_library, Path(args.save_rules))
+        saved_rules_file = str(Path(args.save_rules))
     payload = {
         "paper_id": paper.paper_id,
         "title": paper.title,
@@ -306,6 +324,7 @@ def llm_extract_rules(args: argparse.Namespace) -> int:
         "llm_model": extraction["llm_model"],
         "semantic_candidates": [vector_result_to_dict(result) for result in semantic_results],
         "rules": extraction["rules"],
+        "saved_rules_file": saved_rules_file,
     }
     emit_json(payload)
     return 0
@@ -356,6 +375,22 @@ def eval_rules(args: argparse.Namespace) -> int:
         "total": len(results),
         "passed": passed,
         "failed": len(results) - passed,
+        "results": results,
+    }
+    emit_json(payload)
+    return 0
+
+
+def apply_rules(args: argparse.Namespace) -> int:
+    rule_library = load_rule_library(Path(args.rules_file))
+    observations = load_observations(Path(args.observations_file))
+    engine = RuleApplicationEngine()
+    results = [engine.apply(observation, rule_library["rules"]).to_dict() for observation in observations]
+    payload = {
+        "rules_file": args.rules_file,
+        "observations_file": args.observations_file,
+        "rule_count": len(rule_library["rules"]),
+        "total": len(results),
         "results": results,
     }
     emit_json(payload)
@@ -426,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
     llm_extract.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
     llm_extract.add_argument("--rebuild-index", action="store_true")
     llm_extract.add_argument("--requires-threshold", action="store_true")
+    llm_extract.add_argument("--save-rules", help="Write extracted executable rules to a rule library JSON file.")
     add_embedding_arguments(llm_extract)
     add_llm_arguments(llm_extract)
     llm_extract.add_argument(
@@ -449,6 +485,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
     )
     eval_parser.set_defaults(func=eval_rules)
+    apply_parser = subparsers.add_parser("apply-rules")
+    apply_parser.add_argument("--rules-file", required=True)
+    apply_parser.add_argument("--observations-file", required=True)
+    apply_parser.set_defaults(func=apply_rules)
     return parser
 
 
