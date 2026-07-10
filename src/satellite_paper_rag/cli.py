@@ -12,6 +12,10 @@ from satellite_paper_rag.domain.vocabulary import DomainVocabulary
 from satellite_paper_rag.embeddings.client import DashScopeEmbeddingClient, DeterministicEmbeddingClient, EmbeddingClient
 from satellite_paper_rag.embeddings.vector_index import LocalVectorIndex, VectorIndexBuilder, VectorSearchResult
 from satellite_paper_rag.evaluation.rule_eval import evaluate_extraction_payload, load_eval_cases
+from satellite_paper_rag.explanation.prediction_evidence import (
+    build_prediction_evidence_queries,
+    prediction_summary,
+)
 from satellite_paper_rag.extraction.llm_rule_extractor import LlmRuleExtractor
 from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
 from satellite_paper_rag.llm.client import ChatCompletionClient, DashScopeChatClient
@@ -397,6 +401,56 @@ def apply_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def explain_prediction_evidence(args: argparse.Namespace) -> int:
+    path = resolve_query_path(args)
+    log_progress(args, "Parsing and chunking paper...")
+    paper, chunks = build_chunks(path)
+    log_progress(args, f"Built {len(chunks)} chunks.")
+    embedder = build_embedder(args)
+    index = LocalVectorIndex(Path(args.index_dir))
+    index_status = "loaded"
+    if args.rebuild_index or not index_is_compatible(index, paper, embedder):
+        log_progress(args, f"Index missing or rebuild requested; embedding chunks with {embedder.model_name}...")
+        VectorIndexBuilder(embedder, index).index(paper.paper_id, chunks)
+        index_status = "rebuilt" if args.rebuild_index else "created"
+    observations = load_observations(Path(args.predictions_file))
+    if args.row_index < 0 or args.row_index >= len(observations):
+        raise ValueError(f"row-index {args.row_index} is outside prediction file range 0..{len(observations) - 1}.")
+    observation = observations[args.row_index]
+    evidence_queries = build_prediction_evidence_queries(observation)
+    evidence_results = []
+    for evidence_query in evidence_queries:
+        log_progress(args, f"Retrieving evidence for: {evidence_query['query']}")
+        results = index.search(
+            query=evidence_query["query"],
+            embedder=embedder,
+            paper_id=paper.paper_id,
+            top_k=args.top_k,
+            chunk_types=args.chunk_type,
+        )
+        evidence_results.append(
+            {
+                **evidence_query,
+                "results": [vector_result_to_dict(result) for result in results],
+            }
+        )
+    payload = {
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "source_type": paper.source_type,
+        "predictions_file": args.predictions_file,
+        "row_index": args.row_index,
+        "embedding_model": embedder.model_name,
+        "index_status": index_status,
+        "audit_boundary": "retrieval_only_no_classification",
+        "prediction": prediction_summary(observation),
+        "evidence_queries": evidence_queries,
+        "evidence_results": evidence_results,
+    }
+    emit_json(payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="satellite_paper_rag")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -489,6 +543,22 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--rules-file", required=True)
     apply_parser.add_argument("--observations-file", required=True)
     apply_parser.set_defaults(func=apply_rules)
+    explain_prediction = subparsers.add_parser("explain-prediction-evidence")
+    explain_source = explain_prediction.add_mutually_exclusive_group(required=True)
+    explain_source.add_argument("--file")
+    explain_source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
+    explain_prediction.add_argument("--predictions-file", required=True)
+    explain_prediction.add_argument("--row-index", type=int, default=0)
+    explain_prediction.add_argument("--top-k", type=int, default=3)
+    explain_prediction.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
+    explain_prediction.add_argument("--rebuild-index", action="store_true")
+    add_embedding_arguments(explain_prediction)
+    explain_prediction.add_argument(
+        "--chunk-type",
+        action="append",
+        default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
+    )
+    explain_prediction.set_defaults(func=explain_prediction_evidence)
     return parser
 
 

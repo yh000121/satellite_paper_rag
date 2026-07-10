@@ -46,6 +46,7 @@ class RuleApplicationResult:
     sample_id: str
     predicted_class: str | None
     support: dict[str, float]
+    metadata: dict[str, str] = field(default_factory=dict)
     matched_rules: list[MatchedRule] = field(default_factory=list)
     unmatched_rules: list[dict[str, object]] = field(default_factory=list)
     unsupported_rules: list[dict[str, object]] = field(default_factory=list)
@@ -55,6 +56,7 @@ class RuleApplicationResult:
         return {
             "sample_id": self.sample_id,
             "predicted_class": self.predicted_class,
+            "metadata": self.metadata,
             "support": self.support,
             "matched_rules": [rule.to_dict() for rule in self.matched_rules],
             "unmatched_rules": self.unmatched_rules,
@@ -128,6 +130,7 @@ class RuleApplicationEngine:
             sample_id=sample.sample_id,
             predicted_class=predicted_class,
             support=support,
+            metadata=sample.metadata,
             matched_rules=matched,
             unmatched_rules=unmatched,
             unsupported_rules=unsupported,

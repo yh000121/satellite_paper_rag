@@ -44,6 +44,30 @@ class RuleApplicationEngineTest(unittest.TestCase):
         self.assertEqual([match.rule_id for match in result.matched_rules], ["rule_rho", "rule_lsd"])
         self.assertEqual(result.matched_rules[0].condition, "2.4 > 2.0")
 
+    def test_result_preserves_observation_metadata(self):
+        sample = ObservationSample(
+            sample_id="scene_001:12:8",
+            source_type="csv",
+            satellite=None,
+            sensor=None,
+            features={"S7": 270.1},
+            metadata={"label": "cloud", "image_id": "scene_001", "row": "12", "col": "8"},
+        )
+        rules = [
+            {
+                "rule_id": "rule_s7",
+                "final_class": "cloud",
+                "rule_direction": "positive_evidence",
+                "variable": "S7",
+                "operator": "<",
+                "thresholds": [{"name": "S7", "operator": "<", "value": 271.0}],
+            }
+        ]
+
+        result = RuleApplicationEngine().apply(sample, rules)
+
+        self.assertEqual(result.to_dict()["metadata"]["label"], "cloud")
+
     def test_matching_negative_evidence_reduces_support_and_requires_review_without_positive_evidence(self):
         sample = ObservationSample(
             sample_id="p002",

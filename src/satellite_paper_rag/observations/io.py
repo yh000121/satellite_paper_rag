@@ -9,7 +9,19 @@ from satellite_paper_rag.observations.schema import ObservationSample
 
 
 ID_FIELDS = ("point_id", "sample_id", "id")
-CONTROL_FIELDS = {"point_id", "sample_id", "id", "source_type", "satellite", "sensor", "metadata"}
+METADATA_FIELDS = {
+    "label",
+    "image_id",
+    "row",
+    "col",
+    "predicted_label",
+    "predicted_class",
+    "confidence",
+    "top_features",
+}
+CONTROL_FIELDS = {"point_id", "sample_id", "id", "source_type", "satellite", "sensor", "metadata", *METADATA_FIELDS}
+LABEL_ID_TO_NAME = {"0": "sea", "1": "ice", "2": "cloud"}
+KNOWN_LABEL_NAMES = {"sea", "ice", "cloud"}
 
 
 def load_observations(path: Path) -> list[ObservationSample]:
@@ -50,13 +62,21 @@ def _row_to_sample(row: Any, index: int, source_type: str) -> ObservationSample:
         if key not in CONTROL_FIELDS and value not in (None, "")
     }
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    row_metadata = {
+        str(key): str(value)
+        for key, value in row.items()
+        if key in METADATA_FIELDS and value not in (None, "")
+    }
+    _add_label_metadata(row_metadata)
+    _add_prediction_metadata(row_metadata)
+    row_metadata.update({str(key): str(value) for key, value in metadata.items()})
     return ObservationSample(
         sample_id=sample_id,
         source_type=str(row.get("source_type") or source_type),
         satellite=_optional_string(row.get("satellite")),
         sensor=_optional_string(row.get("sensor")),
         features=features,
-        metadata={str(key): str(value) for key, value in metadata.items()},
+        metadata=row_metadata,
     )
 
 
@@ -65,6 +85,11 @@ def _sample_id(row: dict[str, Any], index: int) -> str:
         value = row.get(field)
         if value not in (None, ""):
             return str(value)
+    image_id = row.get("image_id")
+    row_index = row.get("row")
+    col_index = row.get("col")
+    if image_id not in (None, "") and row_index not in (None, "") and col_index not in (None, ""):
+        return f"{image_id}:{row_index}:{col_index}"
     return f"row_{index:04d}"
 
 
@@ -85,3 +110,27 @@ def _parse_scalar(value: object) -> float | str:
         except ValueError:
             return value
     return str(value)
+
+
+def _add_label_metadata(metadata: dict[str, str]) -> None:
+    raw_label = metadata.get("label")
+    if raw_label in (None, ""):
+        return
+    metadata["label_id"] = raw_label
+    normalized = raw_label.strip().lower()
+    if normalized in LABEL_ID_TO_NAME:
+        metadata["label_name"] = LABEL_ID_TO_NAME[normalized]
+    elif normalized in KNOWN_LABEL_NAMES:
+        metadata["label_name"] = normalized
+
+
+def _add_prediction_metadata(metadata: dict[str, str]) -> None:
+    raw_prediction = metadata.get("predicted_label") or metadata.get("predicted_class")
+    if raw_prediction in (None, ""):
+        return
+    normalized = raw_prediction.strip().lower()
+    if normalized in LABEL_ID_TO_NAME:
+        metadata["predicted_label_id"] = normalized
+        metadata["predicted_class"] = LABEL_ID_TO_NAME[normalized]
+    elif normalized in KNOWN_LABEL_NAMES:
+        metadata["predicted_class"] = normalized
