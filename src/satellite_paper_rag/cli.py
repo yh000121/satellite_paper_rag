@@ -16,17 +16,19 @@ from satellite_paper_rag.explanation.prediction_evidence import (
     build_prediction_evidence_queries,
     prediction_summary,
 )
+from satellite_paper_rag.explanation.llm_evidence_auditor import LlmEvidenceAuditor
 from satellite_paper_rag.extraction.llm_rule_extractor import LlmRuleExtractor
 from satellite_paper_rag.extraction.rule_extractor import ExtractedRule, RuleCandidateExtractor
 from satellite_paper_rag.llm.client import ChatCompletionClient, DashScopeChatClient
 from satellite_paper_rag.observations.io import load_observations
+from satellite_paper_rag.observations.schema import ObservationSample
 from satellite_paper_rag.parsing.markdown_parser import MarkdownPaperParser
 from satellite_paper_rag.parsing.pdf_parser import PdfPaperParser
 from satellite_paper_rag.parsing.text_parser import TextPaperParser
 from satellite_paper_rag.retrieval.contract import RetrievalRequest, RetrievalResult
 from satellite_paper_rag.retrieval.mock_hybrid_retriever import MockHybridRetriever
 from satellite_paper_rag.rules.library import build_rule_library, load_rule_library, write_rule_library
-from satellite_paper_rag.schemas import CHUNKER_VERSION, Paper
+from satellite_paper_rag.schemas import CHUNKER_VERSION, Chunk, Paper
 
 
 DEFAULT_PAPER_DIR = Path("data") / "papers"
@@ -402,6 +404,24 @@ def apply_rules(args: argparse.Namespace) -> int:
 
 
 def explain_prediction_evidence(args: argparse.Namespace) -> int:
+    payload, _, _ = _prediction_evidence_payload(args)
+    emit_json(payload)
+    return 0
+
+
+def audit_prediction_evidence(args: argparse.Namespace) -> int:
+    payload, observation, evidence_chunks = _prediction_evidence_payload(args)
+    log_progress(args, f"Auditing retrieved evidence with {args.llm_model or 'default Qwen model'}...")
+    auditor = LlmEvidenceAuditor(build_chat_client(args))
+    payload["audit_boundary"] = "llm_evidence_audit_no_classification"
+    payload["audit"] = auditor.audit(observation, evidence_chunks)
+    emit_json(payload)
+    return 0
+
+
+def _prediction_evidence_payload(
+    args: argparse.Namespace,
+) -> tuple[dict[str, object], ObservationSample, list[Chunk]]:
     path = resolve_query_path(args)
     log_progress(args, "Parsing and chunking paper...")
     paper, chunks = build_chunks(path)
@@ -419,6 +439,7 @@ def explain_prediction_evidence(args: argparse.Namespace) -> int:
     observation = observations[args.row_index]
     evidence_queries = build_prediction_evidence_queries(observation)
     evidence_results = []
+    unique_evidence_chunks = {}
     for evidence_query in evidence_queries:
         log_progress(args, f"Retrieving evidence for: {evidence_query['query']}")
         results = index.search(
@@ -434,6 +455,8 @@ def explain_prediction_evidence(args: argparse.Namespace) -> int:
                 "results": [vector_result_to_dict(result) for result in results],
             }
         )
+        for result in results:
+            unique_evidence_chunks.setdefault(result.chunk.chunk_id, result.chunk)
     payload = {
         "paper_id": paper.paper_id,
         "title": paper.title,
@@ -447,8 +470,7 @@ def explain_prediction_evidence(args: argparse.Namespace) -> int:
         "evidence_queries": evidence_queries,
         "evidence_results": evidence_results,
     }
-    emit_json(payload)
-    return 0
+    return payload, observation, list(unique_evidence_chunks.values())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -559,6 +581,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
     )
     explain_prediction.set_defaults(func=explain_prediction_evidence)
+    audit_prediction = subparsers.add_parser("audit-prediction-evidence")
+    audit_source = audit_prediction.add_mutually_exclusive_group(required=True)
+    audit_source.add_argument("--file")
+    audit_source.add_argument("--paper", help="Paper filename under data/papers, or an existing path.")
+    audit_prediction.add_argument("--predictions-file", required=True)
+    audit_prediction.add_argument("--row-index", type=int, default=0)
+    audit_prediction.add_argument("--top-k", type=int, default=3)
+    audit_prediction.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
+    audit_prediction.add_argument("--rebuild-index", action="store_true")
+    add_embedding_arguments(audit_prediction)
+    add_llm_arguments(audit_prediction)
+    audit_prediction.add_argument(
+        "--chunk-type",
+        action="append",
+        default=["rule_candidate", "sentence_window_child", "paragraph_child", "figure_table"],
+    )
+    audit_prediction.set_defaults(func=audit_prediction_evidence)
     return parser
 
 

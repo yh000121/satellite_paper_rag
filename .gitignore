@@ -16,3 +16,7 @@ data/papers/*
 !data/papers/.gitkeep
 data/index/*
 !data/index/.gitkeep
+data/csv/*
+!data/csv/.gitkeep
+data/rules/*
+!data/rules/.gitkeep

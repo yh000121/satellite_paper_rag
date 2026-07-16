@@ -6,7 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from satellite_paper_rag.explanation.prediction_evidence import build_prediction_evidence_queries
+from satellite_paper_rag.explanation.prediction_evidence import (
+    build_prediction_evidence_queries,
+    prediction_summary,
+)
 from satellite_paper_rag.observations.io import load_observations
 
 
@@ -14,6 +17,54 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class PredictionEvidenceTest(unittest.TestCase):
+    def test_uses_label_for_evidence_and_excludes_pca_from_rag_context(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "rag_input.csv"
+            path.write_text(
+                "S1,S2,S3,S4,S5,S6,S7,S8,S9,pc1,pc2,pc3,label,image_id,row,col\n"
+                "0.1,0.2,0.3,0.4,0.5,0.6,270.1,271.2,272.3,1.1,1.2,1.3,2,scene_001,12,8\n",
+                encoding="utf-8",
+            )
+            observation = load_observations(path)[0]
+
+        queries = build_prediction_evidence_queries(observation)
+        summary = prediction_summary(observation)
+
+        self.assertEqual(queries[0]["prediction_class"], "cloud")
+        self.assertEqual(summary["predicted_label_id"], "2")
+        self.assertEqual(summary["predicted_class"], "cloud")
+        self.assertEqual(summary["band_schema"]["S1"]["physical_quantity"], "radiance")
+        self.assertEqual(summary["band_schema"]["S7"]["physical_quantity"], "brightness_temperature")
+        self.assertEqual(summary["band_schema"]["S7"]["unit"], "unknown")
+        self.assertEqual(
+            set(summary["band_features"]),
+            {"S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"},
+        )
+        self.assertFalse(any("pc" in query["query"].lower() for query in queries))
+        self.assertNotIn("pc1", summary["band_features"])
+        self.assertNotIn("pc2", summary["band_features"])
+        self.assertNotIn("pc3", summary["band_features"])
+
+    def test_ignores_pca_when_top_features_contains_principal_components(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "rag_input.csv"
+            path.write_text(
+                "S1,S2,S3,S4,S5,S6,S7,S8,S9,pc1,pc2,pc3,label,top_features,image_id,row,col\n"
+                "0.1,0.2,0.3,0.4,0.5,0.6,270.1,271.2,272.3,1.1,1.2,1.3,0,\"pc1,pc2,S7,S8\",scene_001,12,8\n",
+                encoding="utf-8",
+            )
+            observation = load_observations(path)[0]
+
+        queries = build_prediction_evidence_queries(observation)
+        summary = prediction_summary(observation)
+        query_texts = [query["query"].lower() for query in queries]
+
+        self.assertTrue(any("s7 s8" in query for query in query_texts))
+        self.assertFalse(any("spectral component" in query for query in query_texts))
+        self.assertFalse(any("pc1" in query or "pc2" in query for query in query_texts))
+        self.assertNotIn("pc1", json.dumps(summary).lower())
+        self.assertNotIn("pc2", json.dumps(summary).lower())
+
     def test_loads_node_prediction_metadata_without_leaking_into_features(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "node_predictions.csv"
@@ -47,9 +98,11 @@ class PredictionEvidenceTest(unittest.TestCase):
 
         self.assertEqual(queries[0]["prediction_class"], "cloud")
         query_texts = [query["query"] for query in queries]
-        self.assertIn("cloud detection SLSTR brightness temperature reflectance", query_texts)
+        self.assertIn("cloud detection SLSTR S1 S6 radiance S7 S9 brightness temperature", query_texts)
+        self.assertNotIn("cloud detection SLSTR brightness temperature reflectance", query_texts)
         self.assertIn("S7 S8 brightness temperature cloud discrimination", query_texts)
-        self.assertIn("S1 visible reflectance cloud ice ocean", query_texts)
+        self.assertIn("S1 radiance cloud ice ocean discrimination", query_texts)
+        self.assertNotIn("S1 visible reflectance cloud ice ocean", query_texts)
 
     def test_cli_retrieves_paper_evidence_for_node_prediction(self):
         env = dict(os.environ)
